@@ -1,23 +1,15 @@
 use std::time::Duration;
 
 use anyhow::Result;
-// Removing unused imports
-// use backoff::ExponentialBackoffBuilder;
-// use crossterm::event::{KeyCode};
-// use futures_util::{SinkExt, StreamExt};
-// use ratatui::prelude::*;
-// use serde::{Deserialize, Serialize};
-// use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-// use tracing::{error, info};
-// use url::Url;
 
 mod client;
 mod formatter;
 mod models;
+mod security;
 mod ui;
 
 use client::RippleClient;
-use models::{AppState};
+use models::AppState;
 use ui::UI;
 
 #[tokio::main]

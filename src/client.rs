@@ -1,28 +1,42 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use backoff::ExponentialBackoffBuilder;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, warn};
 use url::Url;
 
 use crate::models::{AppState, ClientMessage, Transaction};
+use crate::security::{ConnectionTracker, validate_websocket_url, validate_message, create_tls_connector, log_error, redact_sensitive_data};
 
 pub struct RippleClient {
     server_url: String,
+    connection_tracker: ConnectionTracker,
 }
 
 impl RippleClient {
     pub fn new(server_url: String) -> Self {
-        Self { server_url }
+        Self { 
+            server_url,
+            connection_tracker: ConnectionTracker::new(),
+        }
     }
 
     pub async fn connect(&self, app_state: Arc<Mutex<AppState>>) -> Result<()> {
-        let url = Url::parse(&self.server_url)?;
+        // Validate the WebSocket URL for security issues
+        let url = validate_websocket_url(&self.server_url)
+            .context("Invalid WebSocket URL")?;
         debug!("Connecting to {}", url);
+
+        // Apply rate limiting to prevent DoS
+        if !self.connection_tracker.check_connection_limit(&self.server_url) {
+            let backoff = self.connection_tracker.get_backoff_time(&self.server_url);
+            warn!("Connection rate limit exceeded. Backing off for {} seconds", backoff.as_secs());
+            tokio::time::sleep(backoff).await;
+        }
 
         // Configure backoff strategy
         let _backoff = ExponentialBackoffBuilder::new()
@@ -32,9 +46,23 @@ impl RippleClient {
             .with_max_elapsed_time(Some(Duration::from_secs(300)))
             .build();
 
-        // Connect to WebSocket with error handling
-        match connect_async(url).await {
-            Ok((ws_stream, _)) => {
+        // Create secure TLS connector
+        let tls_connector = create_tls_connector()
+            .context("Failed to create secure TLS connector")?;
+        let connector = tokio_tungstenite::Connector::NativeTls(tls_connector);
+
+        // Connect to WebSocket with error handling and TLS
+        let ws_stream = match tokio_tungstenite::connect_async_tls_with_config(
+            url,
+            None,
+            false,
+            Some(connector)
+        ).await {
+            Ok((ws_stream, response)) => {
+                // Verify the response status code
+                if !response.status().is_informational() && !response.status().is_success() {
+                    return Err(anyhow::anyhow!("WebSocket connection failed with status: {}", response.status()));
+                }
                 debug!("Connected to Ripple WebSocket server");
                 
                 // Update connection status
@@ -43,15 +71,19 @@ impl RippleClient {
                     state.connected = true;
                 }
                 
-                // Subscribe to transactions
-                self.handle_connection(ws_stream, app_state).await?
+                ws_stream
             },
             Err(e) => {
-                warn!("Failed to connect to WebSocket server: {}", e);
-                return Err(anyhow::anyhow!("WebSocket connection failed: {}", e));
+                // Securely log the error without exposing sensitive information
+                let redacted_error = redact_sensitive_data(&e.to_string());
+                warn!("Failed to connect to WebSocket server: {}", redacted_error);
+                return Err(anyhow::anyhow!("WebSocket connection failed"));
             }
-        }
+        };
 
+        // Handle the connection
+        self.handle_connection(ws_stream, app_state).await?;
+        
         Ok(())
     }
 
@@ -63,8 +95,8 @@ impl RippleClient {
         // Subscribe to transactions with error handling
         let subscribe_msg = serde_json::to_string(&ClientMessage::subscribe())?;
         if let Err(e) = ws_stream.send(Message::Text(subscribe_msg)).await {
-            error!("Failed to send subscription message: {}", e);
-            return Err(anyhow::anyhow!("Failed to subscribe: {}", e));
+            log_error("Failed to send subscription message", &e.into());
+            return Err(anyhow::anyhow!("Failed to subscribe"));
         }
         debug!("Subscribed to transactions");
 
@@ -72,8 +104,8 @@ impl RippleClient {
         while let Some(msg) = ws_stream.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    // Parse the message as a JSON value first with error handling
-                    match serde_json::from_str::<serde_json::Value>(&text) {
+                    // Validate and sanitize the message
+                    match validate_message(&text) {
                         Ok(value) => {
                             // Check if this is a transaction message
                             if let Some(tx_obj) = value.get("transaction") {
@@ -157,22 +189,33 @@ impl RippleClient {
                             }
                         },
                         Err(e) => {
-                            // Only log parsing errors for non-empty messages
-                            if !text.trim().is_empty() {
-                                debug!("Failed to parse message: {}", e);
-                            }
+                            // Securely log message validation errors
+                            debug!("Invalid message received: {}", e);
                         }
                     }
                 }
                 Ok(Message::Ping(data)) => {
-                    ws_stream.send(Message::Pong(data)).await?;
+                    // Respond to ping messages to maintain connection
+                    if let Err(e) = ws_stream.send(Message::Pong(data)).await {
+                        log_error("Failed to respond to ping", &e.into());
+                    }
+                }
+                Ok(Message::Close(frame)) => {
+                    // Handle graceful connection closure
+                    if let Some(frame) = frame {
+                        debug!("WebSocket closed with code {}: {}", frame.code, frame.reason);
+                    } else {
+                        debug!("WebSocket closed");
+                    }
+                    break;
                 }
                 Err(e) => {
                     // Use structured error logging with error code if available
-                    if let Some(_code) = e.to_string().find("code") {
-                        error!("WebSocket error (code): {}", e);
+                    let error_msg = redact_sensitive_data(&e.to_string());
+                    if let Some(_code) = error_msg.find("code") {
+                        error!("WebSocket error (code): {}", error_msg);
                     } else {
-                        error!("WebSocket error: {}", e);
+                        error!("WebSocket error: {}", error_msg);
                     }
                     break;
                 }

@@ -995,6 +995,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "lazy_static",
+ "native-tls",
  "ratatui",
  "regex",
  "serde",
