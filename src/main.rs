@@ -1,4 +1,6 @@
 use std::time::Duration;
+use std::process::Command;
+use std::thread;
 
 use anyhow::Result;
 
@@ -53,11 +55,37 @@ async fn main() -> Result<()> {
         }
     });
     
+    // Spawn DeepSeek status terminal
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "cmd", "/K", "cargo run --bin deepseek_status"])
+            .spawn();
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "cmd", "/K", "cargo run --bin wallet_details"])
+            .spawn();
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "cmd", "/K", "cargo run --bin wallet_deepseek_analyzer"])
+            .spawn();
+    }
     // Initialize UI
     let mut ui = UI::new(app_state.clone(), Duration::from_millis(update_interval))?;
-    
     // Start the UI
     ui.run().await?;
+    
+    // Periodically export recent transactions for DeepSeek
+    {
+        let app_state = app_state.clone();
+        thread::spawn(move || {
+            loop {
+                {
+                    let state = app_state.lock().unwrap();
+                    let _ = state.export_recent_transactions_to_json(100, "recent_transactions.json");
+                }
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        });
+    }
     
     Ok(())
 }

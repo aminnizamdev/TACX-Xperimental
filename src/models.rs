@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,8 @@ pub struct AppState {
     pub pending_transactions: Vec<Transaction>,
     pub batch_processing: bool,
     pub last_ui_update: SystemTime,
+    pub high_value_wallets: HashSet<String>,
+    pub wallet_connections: std::collections::HashMap<String, HashSet<String>>,
 }
 
 impl AppState {
@@ -86,6 +89,8 @@ impl AppState {
             pending_transactions: Vec::with_capacity(100),
             batch_processing: true,
             last_ui_update: SystemTime::now(),
+            high_value_wallets: HashSet::new(),
+            wallet_connections: HashMap::new(),
         }))
     }
 
@@ -173,5 +178,77 @@ impl AppState {
     // Call this method periodically to ensure pending transactions are processed
     pub fn flush_pending_transactions(&mut self) {
         self.process_pending_transactions();
+    }
+
+    /// Export the last N transactions to a temp JSON file for DeepSeek analysis
+    pub fn export_recent_transactions_to_json(&self, n: usize, path: &str) -> std::io::Result<()> {
+        use std::fs::File;
+        use std::io::Write;
+        let count = self.transactions.len().min(n);
+        let recent: Vec<_> = self.transactions.iter().rev().take(count).cloned().collect();
+        let json = serde_json::to_string_pretty(&recent).unwrap();
+        let mut file = File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    /// Add a high-value wallet if not already present, and write to file
+    pub fn add_high_value_wallet(&mut self, wallet: &str) {
+        if self.high_value_wallets.insert(wallet.to_string()) {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            let mut file = OpenOptions::new().create(true).append(true).open("high_value_wallets.txt").unwrap();
+            writeln!(file, "{}", wallet).unwrap();
+        }
+    }
+
+    /// Record a connection between two high-value wallets
+    pub fn add_wallet_connection(&mut self, from: &str, to: &str) {
+        use std::collections::hash_map::Entry;
+        if from == to { return; }
+        match self.wallet_connections.entry(from.to_string()) {
+            Entry::Occupied(mut e) => { e.get_mut().insert(to.to_string()); },
+            Entry::Vacant(e) => { e.insert(HashSet::from([to.to_string()])); },
+        }
+    }
+
+    /// Check if a transaction is high-value, log wallet, and record interconnections
+    pub fn check_and_log_high_value(&mut self, tx: &Transaction) {
+        let is_high_value = match tx.tx_type.as_str() {
+            "Payment" => tx.amount.as_ref().and_then(|a| a.parse::<u64>().ok()).map_or(false, |amt| amt >= 100_000_000_000),
+            "OfferCreate" => {
+                let gets = tx.taker_gets.as_ref().and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+                let pays = tx.taker_pays.as_ref().and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+                gets >= 10_000_000_000 || pays >= 10_000_000_000
+            },
+            _ => false,
+        };
+        if is_high_value {
+            if let Some(ref account) = tx.account {
+                self.add_high_value_wallet(account);
+                // Check for interconnections
+                let mut other_wallets = Vec::new();
+                if let Some(ref counterparty) = tx.taker_gets {
+                    if self.high_value_wallets.contains(counterparty) {
+                        other_wallets.push(counterparty.clone());
+                    }
+                }
+                if let Some(ref counterparty) = tx.taker_pays {
+                    if self.high_value_wallets.contains(counterparty) {
+                        other_wallets.push(counterparty.clone());
+                    }
+                }
+                // For Payment, also check if amount field is a wallet (rare, but for completeness)
+                if let Some(ref counterparty) = tx.amount {
+                    if self.high_value_wallets.contains(counterparty) {
+                        other_wallets.push(counterparty.clone());
+                    }
+                }
+                for other in other_wallets {
+                    self.add_wallet_connection(account, &other);
+                    self.add_wallet_connection(&other, account);
+                }
+            }
+        }
     }
 }

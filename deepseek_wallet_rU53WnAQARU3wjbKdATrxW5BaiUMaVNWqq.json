@@ -1,0 +1,51 @@
+{
+  "account_info": {
+    "id": 1,
+    "result": {
+      "account_data": {
+        "Account": "rU53WnAQARU3wjbKdATrxW5BaiUMaVNWqq",
+        "Balance": "3140182",
+        "Flags": 0,
+        "LedgerEntryType": "AccountRoot",
+        "OwnerCount": 7,
+        "PreviousTxnID": "0EAA8508A96BEB50E71DE8E54ED25A317D579C0EB0099A9372E4B70E3423CED1",
+        "PreviousTxnLgrSeq": 95699702,
+        "Sequence": 93363961,
+        "index": "89A089C3390A5B340785281462D7760F7F4C185F0FCE80D4B254788B533E0D4C"
+      },
+      "account_flags": {
+        "allowTrustLineClawback": false,
+        "defaultRipple": false,
+        "depositAuth": false,
+        "disableMasterKey": false,
+        "disallowIncomingCheck": false,
+        "disallowIncomingNFTokenOffer": false,
+        "disallowIncomingPayChan": false,
+        "disallowIncomingTrustline": false,
+        "disallowIncomingXRP": false,
+        "globalFreeze": false,
+        "noFreeze": false,
+        "passwordSpent": false,
+        "requireAuthorization": false,
+        "requireDestinationTag": false
+      },
+      "ledger_hash": "2EC6562BC3B15211142FCCEA4BA89882F8319F214862E38F916CC0078908E8B8",
+      "ledger_index": 95699817,
+      "validated": true
+    },
+    "status": "success",
+    "type": "response",
+    "warnings": [
+      {
+        "id": 2004,
+        "message": "Some fields from your request are deprecated. Please check the documentation at https://xrpl.org/docs/references/http-websocket-apis/ and update your request. Field 'strict' is deprecated."
+      },
+      {
+        "id": 2001,
+        "message": "This is a clio server. clio only serves validated data. If you want to talk to rippled, include 'ledger_index':'current' in your request"
+      }
+    ]
+  },
+  "connected_wallets": [],
+  "wallet": "rU53WnAQARU3wjbKdATrxW5BaiUMaVNWqq"
+}

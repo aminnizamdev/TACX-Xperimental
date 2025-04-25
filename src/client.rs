@@ -7,7 +7,6 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, warn};
-use url::Url;
 
 use crate::models::{AppState, ClientMessage, Transaction};
 use crate::security::{ConnectionTracker, validate_websocket_url, validate_message, create_tls_connector, log_error, redact_sensitive_data};
@@ -176,6 +175,7 @@ impl RippleClient {
                                 // Use a shorter lock duration to reduce contention
                                 {
                                     let mut state = app_state.lock().unwrap();
+                                    state.check_and_log_high_value(&tx);
                                     state.add_transaction(tx);
                                 }
                                 // Don't log every transaction to reduce console clutter
